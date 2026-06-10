@@ -10,7 +10,7 @@ import {
   createKanbanBoard,
   archiveKanbanBoard
 } from '../../server/kanban-backend'
-import { initFirm } from '../../server/firm-integration'
+import { initFirm, getFirmStatus } from '../../server/firm-integration'
 import * as path from 'node:path'
 import { getHermesRoot } from '../../server/claude-paths'
 
@@ -70,13 +70,18 @@ export const Route = createFileRoute('/api/swarm-kanban')({
         const action = url.searchParams.get('action')
 
         if (action === 'boards') {
-          return json(await listKanbanBoards())
+          const boardsData = await listKanbanBoards()
+          return json({
+            ...boardsData,
+            firm: await getFirmStatus()
+          })
         }
 
         return json({
           ok: true,
           cards: await listKanbanCards(board),
           backend: getKanbanBackendMeta(board),
+          firm: await getFirmStatus()
         })
       },
       POST: async ({ request }) => {

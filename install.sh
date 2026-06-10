@@ -212,6 +212,28 @@ if [[ -f "$HERMES_ENV_PATH" ]]; then
   fi
 fi
 
+# ─── install firm (Business-as-code) ──────────────────────────────────────
+
+if command -v firm &>/dev/null; then
+  green "  firm already installed ✓ ($(command -v firm))"
+else
+  cyan "→ Installing firm (Business-as-code)…"
+  if command -v brew &>/dev/null; then
+    yellow "  Installing via Homebrew…"
+    brew tap 42futures/firm || true
+    brew install firm || true
+    if command -v firm &>/dev/null; then
+      green "  firm installed via brew ✓"
+    else
+      red "  Homebrew installation failed. Please install manually: https://github.com/42futures/firm/releases"
+    fi
+  else
+    yellow "  Homebrew not found. Please install firm manually:"
+    yellow "    GitHub: https://github.com/42futures/firm/releases"
+    yellow "    Or via brew: brew tap 42futures/firm && brew install firm"
+  fi
+fi
+
 cyan "→ Installing npm deps (pnpm install)…"
 pnpm_cmd install --silent
 green "  deps installed ✓"

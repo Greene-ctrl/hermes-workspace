@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { PlusSignIcon, Archive02Icon, Office01Icon } from '@hugeicons/core-free-icons'
+import { PlusSignIcon, Archive02Icon, Office01Icon, CheckmarkCircle02Icon, AlertCircleIcon } from '@hugeicons/core-free-icons'
 
 type KanbanLane = 'backlog' | 'ready' | 'running' | 'review' | 'blocked' | 'done'
 
@@ -52,9 +52,16 @@ type KanbanBoardMeta = {
   archived?: boolean
 }
 
+type FirmStatus = {
+  installed: boolean
+  path?: string | null
+  version?: string | null
+}
+
 type KanbanResponse = {
   cards?: Array<SwarmKanbanCard>
   backend?: KanbanBackendMeta
+  firm?: FirmStatus
 }
 
 type Swarm2KanbanBoardProps = {
@@ -152,7 +159,7 @@ const LANE_TONE: Record<KanbanLane, string> = {
   done: 'border-green-400/40 bg-green-500/10 text-green-700',
 }
 
-async function fetchKanbanCards(board?: string): Promise<{ cards: Array<SwarmKanbanCard>; backend: KanbanBackendMeta | null }> {
+async function fetchKanbanCards(board?: string): Promise<{ cards: Array<SwarmKanbanCard>; backend: KanbanBackendMeta | null; firm?: FirmStatus }> {
   const url = board ? `/api/swarm-kanban?board=${encodeURIComponent(board)}` : '/api/swarm-kanban'
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Kanban request failed: ${res.status}`)
@@ -160,10 +167,11 @@ async function fetchKanbanCards(board?: string): Promise<{ cards: Array<SwarmKan
   return {
     cards: Array.isArray(data.cards) ? data.cards : [],
     backend: data.backend ?? null,
+    firm: data.firm
   }
 }
 
-async function fetchKanbanBoards(): Promise<{ boards: KanbanBoardMeta[], current: string }> {
+async function fetchKanbanBoards(): Promise<{ boards: KanbanBoardMeta[], current: string, firm?: FirmStatus }> {
   const res = await fetch('/api/swarm-kanban?action=boards')
   if (!res.ok) throw new Error(`Boards request failed: ${res.status}`)
   return res.json()
@@ -374,6 +382,7 @@ export function Swarm2KanbanBoard({
   }, [query.data])
 
   const backend = query.data?.backend
+  const firm = query.data?.firm || boardsQuery.data?.firm
   const presentation = getKanbanBackendPresentation(backend)
 
   const handleCreateCard = () => {
@@ -446,6 +455,11 @@ export function Swarm2KanbanBoard({
           {activeBoard?.description && (
             <span className="hidden text-xs text-[var(--theme-muted)] lg:inline-block">— {activeBoard.description}</span>
           )}
+
+          <div className={cn('flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider shadow-sm', firm?.installed ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-700' : 'border-amber-400/40 bg-amber-500/10 text-amber-700')}>
+             <HugeiconsIcon icon={firm?.installed ? CheckmarkCircle02Icon : AlertCircleIcon} size={10} />
+             {firm?.installed ? 'Firm Active' : 'Firm Missing'}
+          </div>
         </div>
         <div className="flex gap-2">
           <button type="button" onClick={() => setComposerOpen(!composerOpen)} className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-2 text-sm font-semibold text-[var(--theme-text)] shadow-sm hover:bg-[var(--theme-card2)] transition-colors">
@@ -499,8 +513,11 @@ export function Swarm2KanbanBoard({
                   className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none"
                 />
               </label>
-              <div className="mt-2 rounded-lg bg-[var(--theme-bg)] p-3 text-[10px] text-[var(--theme-muted)]">
-                <p>Initializing a new board will automatically run <strong>firm init</strong> in the project folder to track company/firm metadata.</p>
+              <div className="mt-2 rounded-lg bg-[var(--theme-bg)] p-3 text-[10px] text-[var(--theme-muted)] border border-[var(--theme-border)]">
+                <p className="mb-2">Initializing a new board will automatically run <strong>firm init</strong> in the project folder to track company/firm metadata.</p>
+                {!firm?.installed && (
+                   <p className="text-amber-600 dark:text-amber-400 font-semibold italic">Note: "firm" binary not detected. A placeholder FIRM.md will be created instead. To enable full integration: <u>brew install 42futures/firm/firm</u></p>
+                )}
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button
