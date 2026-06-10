@@ -1,7 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { z } from 'zod'
-import { createKanbanCard, getKanbanBackendMeta, listKanbanCards, updateKanbanCard } from '../../server/kanban-backend'
+import {
+  createKanbanCard,
+  getKanbanBackendMeta,
+  listKanbanCards,
+  updateKanbanCard,
+  listKanbanBoards,
+  createKanbanBoard,
+  archiveKanbanBoard
+} from '../../server/kanban-backend'
+import { initFirm } from '../../server/firm-integration'
+import * as path from 'node:path'
+import { getHermesRoot } from '../../server/claude-paths'
 
 const AcceptanceCriteriaSchema = z.preprocess(
   (value) => {
@@ -53,20 +64,44 @@ const UpdateCardSchema = CreateCardSchema.partial().extend({
 export const Route = createFileRoute('/api/swarm-kanban')({
   server: {
     handlers: {
-      GET: async () => {
+      GET: async ({ request }) => {
+        const url = new URL(request.url)
+        const board = url.searchParams.get('board') || undefined
+        const action = url.searchParams.get('action')
+
+        if (action === 'boards') {
+          return json(await listKanbanBoards())
+        }
+
         return json({
           ok: true,
-          cards: await listKanbanCards(),
-          backend: getKanbanBackendMeta(),
+          cards: await listKanbanCards(board),
+          backend: getKanbanBackendMeta(board),
         })
       },
       POST: async ({ request }) => {
+        const url = new URL(request.url)
+        const board = url.searchParams.get('board') || undefined
+        const action = url.searchParams.get('action')
+
         let body: unknown
         try {
           body = await request.json()
         } catch {
           return json({ ok: false, error: 'Invalid JSON' }, { status: 400 })
         }
+
+        if (action === 'boards') {
+          const input = body as { slug: string; name?: string; description?: string; icon?: string }
+          const b = await createKanbanBoard(input)
+
+          // Firm integration: automatically initialize firm in the project folder
+          const projectPath = path.join(getHermesRoot(), 'kanban', 'boards', b.slug)
+          await initFirm(projectPath, { name: b.displayName || b.slug, description: b.description || undefined })
+
+          return json({ ok: true, board: b })
+        }
+
         const parsed = CreateCardSchema.safeParse(body)
         if (!parsed.success) {
           return json({ ok: false, error: parsed.error.issues.map((issue) => issue.message).join('; ') }, { status: 400 })
@@ -85,10 +120,13 @@ export const Route = createFileRoute('/api/swarm-kanban')({
           parents: data.parents,
           tags: data.tags,
           idempotencyKey: data.idempotencyKey,
-        })
-        return json({ ok: true, card, backend: getKanbanBackendMeta() })
+        }, board)
+        return json({ ok: true, card, backend: getKanbanBackendMeta(board) })
       },
       PATCH: async ({ request }) => {
+        const url = new URL(request.url)
+        const board = url.searchParams.get('board') || undefined
+
         let body: unknown
         try {
           body = await request.json()
@@ -100,10 +138,20 @@ export const Route = createFileRoute('/api/swarm-kanban')({
           return json({ ok: false, error: parsed.error.issues.map((issue) => issue.message).join('; ') }, { status: 400 })
         }
         const { id, ...updates } = parsed.data
-        const card = await updateKanbanCard(id, updates)
+        const card = await updateKanbanCard(id, updates, board)
         if (!card) return json({ ok: false, error: 'Card not found' }, { status: 404 })
-        return json({ ok: true, card, backend: getKanbanBackendMeta() })
+        return json({ ok: true, card, backend: getKanbanBackendMeta(board) })
       },
+      DELETE: async ({ request }) => {
+        const url = new URL(request.url)
+        const action = url.searchParams.get('action')
+        const slug = url.searchParams.get('slug')
+
+        if (action === 'boards' && slug) {
+          return json(await archiveKanbanBoard(slug))
+        }
+        return json({ ok: false, error: 'Method not allowed' }, { status: 405 })
+      }
     },
   },
 })

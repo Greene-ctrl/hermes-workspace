@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
+import { HugeiconsIcon } from '@hugeicons/react'
+import { PlusSignIcon, Archive02Icon, Office01Icon } from '@hugeicons/core-free-icons'
 
 type KanbanLane = 'backlog' | 'ready' | 'running' | 'review' | 'blocked' | 'done'
 
@@ -40,6 +42,14 @@ type KanbanBackendMeta = {
   writable: boolean
   details?: string | null
   path?: string | null
+}
+
+type KanbanBoardMeta = {
+  slug: string
+  displayName?: string | null
+  description?: string | null
+  icon?: string | null
+  archived?: boolean
 }
 
 type KanbanResponse = {
@@ -87,10 +97,6 @@ export function getKanbanBackendPresentation(backend: KanbanBackendMeta | null |
     }
   }
   if (backend.id === 'hermes-proxy' && backend.detected) {
-    // Backend.path is the dashboard origin. Do not deep-link to loopback
-    // origins (127.0.0.1/localhost): in a remote browser that points at the
-    // user's own device, not the VPS. The board still syncs via Workspace's
-    // server-side proxy, so the safe UI is to show a non-clickable status.
     const dashboardUrl =
       typeof backend.path === 'string' &&
       backend.path.startsWith('http') &&
@@ -146,14 +152,21 @@ const LANE_TONE: Record<KanbanLane, string> = {
   done: 'border-green-400/40 bg-green-500/10 text-green-700',
 }
 
-async function fetchKanbanCards(): Promise<{ cards: Array<SwarmKanbanCard>; backend: KanbanBackendMeta | null }> {
-  const res = await fetch('/api/swarm-kanban')
+async function fetchKanbanCards(board?: string): Promise<{ cards: Array<SwarmKanbanCard>; backend: KanbanBackendMeta | null }> {
+  const url = board ? `/api/swarm-kanban?board=${encodeURIComponent(board)}` : '/api/swarm-kanban'
+  const res = await fetch(url)
   if (!res.ok) throw new Error(`Kanban request failed: ${res.status}`)
   const data = (await res.json()) as KanbanResponse
   return {
     cards: Array.isArray(data.cards) ? data.cards : [],
     backend: data.backend ?? null,
   }
+}
+
+async function fetchKanbanBoards(): Promise<{ boards: KanbanBoardMeta[], current: string }> {
+  const res = await fetch('/api/swarm-kanban?action=boards')
+  if (!res.ok) throw new Error(`Boards request failed: ${res.status}`)
+  return res.json()
 }
 
 async function createKanbanCard(input: {
@@ -165,8 +178,9 @@ async function createKanbanCard(input: {
   status: KanbanLane
   missionId: string | null
   tags: Array<string>
-}): Promise<SwarmKanbanCard> {
-  const res = await fetch('/api/swarm-kanban', {
+}, board?: string): Promise<SwarmKanbanCard> {
+  const url = board ? `/api/swarm-kanban?board=${encodeURIComponent(board)}` : '/api/swarm-kanban'
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -176,8 +190,9 @@ async function createKanbanCard(input: {
   return data.card
 }
 
-async function updateKanbanCard(id: string, updates: Partial<SwarmKanbanCard>): Promise<SwarmKanbanCard> {
-  const res = await fetch('/api/swarm-kanban', {
+async function updateKanbanCard(id: string, updates: Partial<SwarmKanbanCard>, board?: string): Promise<SwarmKanbanCard> {
+  const url = board ? `/api/swarm-kanban?board=${encodeURIComponent(board)}` : '/api/swarm-kanban'
+  const res = await fetch(url, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, ...updates }),
@@ -185,6 +200,24 @@ async function updateKanbanCard(id: string, updates: Partial<SwarmKanbanCard>): 
   const data = await res.json().catch(() => ({}))
   if (!res.ok || data?.ok === false) throw new Error(data?.error || `Kanban update failed: ${res.status}`)
   return data.card
+}
+
+async function createBoard(input: { slug: string; name?: string; description?: string; icon?: string }): Promise<KanbanBoardMeta> {
+  const res = await fetch('/api/swarm-kanban?action=boards', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const data = await res.json()
+  if (!res.ok || data?.ok === false) throw new Error(data?.error || 'Board creation failed')
+  return data.board
+}
+
+async function archiveBoard(slug: string): Promise<void> {
+  const res = await fetch(`/api/swarm-kanban?action=boards&slug=${encodeURIComponent(slug)}`, {
+    method: 'DELETE'
+  })
+  if (!res.ok) throw new Error('Board archival failed')
 }
 
 function splitCriteria(value: string): Array<string> {
@@ -201,47 +234,35 @@ function splitTags(value: string): Array<string> {
     .filter(Boolean)
 }
 
-type ParsedTaskLabel = { tier1: string; tier2?: string; color: string }
-
-const LABEL_COLORS = [
-  'border-sky-400/50 bg-sky-500/10 text-sky-700',
-  'border-violet-400/50 bg-violet-500/10 text-violet-700',
-  'border-emerald-400/50 bg-emerald-500/10 text-emerald-700',
-  'border-amber-400/50 bg-amber-500/10 text-amber-700',
-  'border-rose-400/50 bg-rose-500/10 text-rose-700',
-  'border-cyan-400/50 bg-cyan-500/10 text-cyan-700',
-]
-
-function labelColor(tier1: string): string {
-  let hash = 0
-  for (const char of tier1) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
-  return LABEL_COLORS[hash % LABEL_COLORS.length] ?? LABEL_COLORS[0]
+function workerLabel(workers: Array<KanbanWorker>, id: string | null | undefined): string {
+  if (!id) return 'Unassigned'
+  const worker = workers.find((w) => w.id === id)
+  return worker?.displayName || worker?.id || id
 }
 
-function parseTaskLabel(tag: string): ParsedTaskLabel | null {
-  const raw = tag.trim()
-  if (!raw.toLowerCase().startsWith('label:')) return null
-  const body = raw.slice('label:'.length).trim()
-  if (!body) return null
-  const [tier1, ...rest] = body.split('/').map((part) => part.trim()).filter(Boolean)
-  if (!tier1) return null
-  return { tier1, tier2: rest.join(' / ') || undefined, color: labelColor(tier1) }
+function parseTaskLabel(label: string): { tier1: string; tier2?: string; color: string } | null {
+  if (!label.toLowerCase().startsWith('label:')) return null
+  const [tier1, tier2] = label.slice(6).split('/')
+  const hash = Array.from(tier1).reduce((acc, char) => acc + char.charCodeAt(0), 0)
+  const COLORS = [
+    'border-blue-400/40 bg-blue-500/10 text-blue-700',
+    'border-emerald-400/40 bg-emerald-500/10 text-emerald-700',
+    'border-violet-400/40 bg-violet-500/10 text-violet-700',
+    'border-orange-400/40 bg-orange-500/10 text-orange-700',
+    'border-cyan-400/40 bg-cyan-500/10 text-cyan-700',
+    'border-rose-400/40 bg-rose-500/10 text-rose-700',
+  ]
+  return { tier1, tier2, color: COLORS[hash % COLORS.length] }
 }
 
 function formatElapsedSince(timestamp: number): string {
-  const ageMs = Math.max(0, Date.now() - timestamp)
-  const minutes = Math.floor(ageMs / 60_000)
-  if (minutes < 1) return '<1m'
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  const remainingMinutes = minutes % 60
-  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`
-}
-
-function workerLabel(workers: Array<KanbanWorker>, workerId: string | null): string {
-  if (!workerId) return 'Unassigned'
-  const worker = workers.find((item) => item.id === workerId)
-  return worker?.displayName || workerId
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s`
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m`
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) return `${elapsedHours}h`
+  return `${Math.floor(elapsedHours / 24)}d`
 }
 
 export function Swarm2KanbanBoard({
@@ -253,279 +274,267 @@ export function Swarm2KanbanBoard({
   className,
 }: Swarm2KanbanBoardProps) {
   const queryClient = useQueryClient()
+  const [selectedBoard, setSelectedBoard] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('hermes_kanban_selected_board') || 'default'
+    }
+    return 'default'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('hermes_kanban_selected_board', selectedBoard)
+  }, [selectedBoard])
+
+  const boardsQuery = useQuery({
+    queryKey: ['kanban-boards'],
+    queryFn: fetchKanbanBoards,
+  })
+
+  const query = useQuery({
+    queryKey: ['swarm-kanban', selectedBoard],
+    queryFn: () => fetchKanbanCards(selectedBoard),
+    refetchInterval: 30_000,
+  })
+
   const [composerOpen, setComposerOpen] = useState(false)
+  const [boardModalOpen, setBoardModalOpen] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSpec, setDraftSpec] = useState('')
   const [draftCriteria, setDraftCriteria] = useState('')
-  const [draftWorker, setDraftWorker] = useState(selectedWorkerId ?? '')
-  const [draftReviewer, setDraftReviewer] = useState('')
-  const [draftStatus, setDraftStatus] = useState<KanbanLane>('backlog')
   const [draftLabels, setDraftLabels] = useState('')
-  const [activeLabelFilter, setActiveLabelFilter] = useState<string | null>(null)
-  const [linkLatestMission, setLinkLatestMission] = useState(Boolean(latestMission))
-  const [backendToast, setBackendToast] = useState<KanbanBackendPresentation | null>(null)
-  const lastToastedBackendKey = useRef<string | null>(null)
+  const [draftWorkerId, setDraftWorkerId] = useState('')
+  const [draftStatus, setDraftStatus] = useState<KanbanLane>('backlog')
+  const [linkLatestMission, setLinkLatestMission] = useState(true)
 
-  // Poll every 5s so cards added/moved on the Hermes Dashboard appear here
-  // without a manual refresh. The Hermes plugin also exposes a WebSocket
-  // (/api/plugins/kanban/events) for true live updates; wiring that in is
-  // the next step on the v2.3.0 kanban roadmap.
-  const query = useQuery({
-    queryKey: ['swarm2', 'kanban'],
-    queryFn: fetchKanbanCards,
-    refetchInterval: 5_000,
-    staleTime: 2_000,
-  })
-
-  const backend = query.data?.backend ?? null
-  const backendPresentation = useMemo(() => getKanbanBackendPresentation(backend), [backend])
-
-  useEffect(() => {
-    if (!backend) return
-    const backendKey = `${backend.id}:${backend.detected ? 'detected' : 'fallback'}:${backend.path ?? ''}`
-    if (lastToastedBackendKey.current === backendKey) return
-    lastToastedBackendKey.current = backendKey
-
-    const storageKey = 'swarm2-kanban-backend-toast'
-    if (typeof window !== 'undefined') {
-      const lastSessionToast = window.sessionStorage.getItem(storageKey)
-      if (lastSessionToast === backendKey) return
-      window.sessionStorage.setItem(storageKey, backendKey)
-    }
-
-    const nextToast = getKanbanBackendPresentation(backend)
-    setBackendToast(nextToast)
-    const timeout = window.setTimeout(() => setBackendToast(null), 4_500)
-    return () => window.clearTimeout(timeout)
-  }, [backend])
+  const [newBoardSlug, setNewBoardSlug] = useState('')
+  const [newBoardName, setNewBoardName] = useState('')
+  const [newBoardDesc, setNewBoardDesc] = useState('')
+  const [newBoardIcon, setNewBoardIcon] = useState('')
 
   const createMutation = useMutation({
-    mutationFn: () => createKanbanCard({
-      title: draftTitle.trim(),
-      spec: draftSpec.trim(),
-      acceptanceCriteria: splitCriteria(draftCriteria),
-      assignedWorker: draftWorker || null,
-      reviewer: draftReviewer || null,
-      status: draftStatus,
-      missionId: linkLatestMission ? latestMission?.id ?? null : null,
-      tags: splitTags(draftLabels),
-    }),
-    onSuccess: async () => {
+    mutationFn: (input: {
+      title: string
+      spec: string
+      acceptanceCriteria: Array<string>
+      assignedWorker: string | null
+      reviewer: string | null
+      status: KanbanLane
+      missionId: string | null
+      tags: Array<string>
+    }) => createKanbanCard(input, selectedBoard),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['swarm-kanban', selectedBoard] })
+      setComposerOpen(false)
       setDraftTitle('')
       setDraftSpec('')
       setDraftCriteria('')
-      setDraftWorker(selectedWorkerId ?? '')
-      setDraftReviewer('')
-      setDraftStatus('backlog')
       setDraftLabels('')
-      setComposerOpen(false)
-      await queryClient.invalidateQueries({ queryKey: ['swarm2', 'kanban'] })
+      setDraftWorkerId('')
+      setDraftStatus('backlog')
     },
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, updates }: { id: string; updates: Partial<SwarmKanbanCard> }) => updateKanbanCard(id, updates),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['swarm2', 'kanban'] })
+    mutationFn: ({ id, updates }: { id: string; updates: Partial<SwarmKanbanCard> }) =>
+      updateKanbanCard(id, updates, selectedBoard),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['swarm-kanban', selectedBoard] })
     },
   })
 
-  const labelOptions = useMemo(() => {
-    const labels = new Map<string, ParsedTaskLabel>()
-    for (const card of query.data?.cards ?? []) {
-      for (const tag of card.tags ?? []) {
-        const parsed = parseTaskLabel(tag)
-        if (parsed) labels.set(`${parsed.tier1}${parsed.tier2 ? `/${parsed.tier2}` : ''}`, parsed)
-      }
+  const createBoardMutation = useMutation({
+    mutationFn: createBoard,
+    onSuccess: (board) => {
+      void queryClient.invalidateQueries({ queryKey: ['kanban-boards'] })
+      setSelectedBoard(board.slug)
+      setBoardModalOpen(false)
+      setNewBoardSlug('')
+      setNewBoardName('')
+      setNewBoardDesc('')
+      setNewBoardIcon('')
     }
-    return [...labels.entries()].map(([key, label]) => ({ key, label }))
-  }, [query.data])
+  })
 
-  const visibleCards = useMemo(() => {
-    const cards = query.data?.cards ?? []
-    if (!activeLabelFilter) return cards
-    return cards.filter((card) =>
-      (card.tags ?? []).some((tag) => {
-        const parsed = parseTaskLabel(tag)
-        const key = parsed ? `${parsed.tier1}${parsed.tier2 ? `/${parsed.tier2}` : ''}` : ''
-        return key === activeLabelFilter || parsed?.tier1 === activeLabelFilter
-      }),
-    )
-  }, [activeLabelFilter, query.data])
+  const archiveBoardMutation = useMutation({
+    mutationFn: archiveBoard,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['kanban-boards'] })
+      setSelectedBoard('default')
+    }
+  })
 
   const cardsByLane = useMemo(() => {
     const map = new Map<KanbanLane, Array<SwarmKanbanCard>>()
-    for (const lane of LANES) map.set(lane.id, [])
-    for (const card of visibleCards) {
-      const bucket = map.get(card.status) ?? map.get('backlog')!
-      bucket.push(card)
+    for (const card of query.data?.cards ?? []) {
+      const list = map.get(card.status) ?? []
+      list.push(card)
+      map.set(card.status, list)
     }
     return map
-  }, [visibleCards])
+  }, [query.data])
 
-  const total = query.data?.cards.length ?? 0
-  const reviewCount = cardsByLane.get('review')?.length ?? 0
-  const blockedCount = cardsByLane.get('blocked')?.length ?? 0
+  const backend = query.data?.backend
+  const presentation = getKanbanBackendPresentation(backend)
+
+  const handleCreateCard = () => {
+    void createMutation.mutateAsync({
+      title: draftTitle,
+      spec: draftSpec,
+      acceptanceCriteria: splitCriteria(draftCriteria),
+      assignedWorker: draftWorkerId || null,
+      reviewer: null,
+      status: draftStatus,
+      missionId: linkLatestMission && latestMission ? latestMission.id : null,
+      tags: splitTags(draftLabels),
+    })
+  }
+
+  const boards = boardsQuery.data?.boards ?? []
+  const activeBoard = boards.find(b => b.slug === selectedBoard)
+  const hasMultipleBoards = boards.length > 1 || query.data?.cards?.length
 
   return (
-    <section className={cn('rounded-3xl border border-[var(--theme-border)] bg-[var(--theme-card)] p-4 shadow-[0_24px_80px_var(--theme-shadow)]', className)}>
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--theme-muted)]">Manual planning</div>
-          <h2 className="mt-1 text-lg font-semibold text-[var(--theme-text)]">Swarm Board</h2>
-          <p className="mt-1 max-w-3xl text-xs leading-relaxed text-[var(--theme-muted-2)]">
-            Auto-detects the shared Kanban store by default; if it is unavailable, cards stay in a local fallback. Dispatch stays explicit through Router.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--theme-muted)]">
-          <span className="rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1">{total} cards</span>
-          {backendPresentation.dashboardUrl ? (
-            <a
-              href={backendPresentation.dashboardUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-full border px-2 py-1 font-medium transition-colors',
-                'border-emerald-400/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20',
-              )}
-              title={`${backendPresentation.title ?? ''}\nOpen in Hermes Dashboard ↗`}
-              aria-live="polite"
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              {backendPresentation.badgeLabel}
-              <span className="opacity-60" aria-hidden="true">
-                ↗
-              </span>
-            </a>
-          ) : (
-            <span
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-full border px-2 py-1 font-medium',
-                backendPresentation.badgeTone === 'hermes-proxy'
-                  ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-700'
-                  : backendPresentation.badgeTone === 'claude'
-                    ? 'border-violet-400/40 bg-violet-500/10 text-violet-700'
-                    : backendPresentation.badgeTone === 'local'
-                      ? 'border-amber-400/40 bg-amber-500/10 text-amber-700'
-                      : 'border-[var(--theme-border)] bg-[var(--theme-bg)] text-[var(--theme-muted)]',
-              )}
-              title={backendPresentation.title}
-              aria-live="polite"
-            >
-              <span
-                className={cn(
-                  'h-1.5 w-1.5 rounded-full',
-                  backendPresentation.badgeTone === 'hermes-proxy'
-                    ? 'bg-emerald-500'
-                    : backendPresentation.badgeTone === 'claude'
-                      ? 'bg-violet-500'
-                      : backendPresentation.badgeTone === 'local'
-                        ? 'bg-amber-500'
-                        : 'bg-[var(--theme-muted)]',
-                )}
-              />
-              {backendPresentation.badgeLabel}
-            </span>
-          )}
-          <span className="rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1">{reviewCount} review</span>
-          <span className="rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 py-1">{blockedCount} blocked</span>
-          <button
-            type="button"
-            onClick={() => {
-              setDraftWorker(selectedWorkerId ?? '')
-              setLinkLatestMission(Boolean(latestMission))
-              setComposerOpen((open) => !open)
-            }}
-            className="rounded-full bg-[var(--theme-accent)] px-3 py-1.5 font-semibold text-primary-950 hover:bg-[var(--theme-accent-strong)]"
-          >
-            New card
-          </button>
-        </div>
-      </div>
+    <section className={cn('flex flex-col gap-4', className)}>
+      <header className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-bold tracking-tight text-[var(--theme-text)]">Kanban</h2>
 
-      {labelOptions.length > 0 ? (
-        <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
-          <button
-            type="button"
-            onClick={() => setActiveLabelFilter(null)}
-            className={cn(
-              'rounded-full border px-2.5 py-1 font-semibold transition-colors',
-              !activeLabelFilter
-                ? 'border-[var(--theme-accent)] bg-[var(--theme-accent-soft)] text-[var(--theme-accent-strong)]'
-                : 'border-[var(--theme-border)] bg-[var(--theme-bg)] text-[var(--theme-muted)] hover:text-[var(--theme-text)]',
-            )}
-          >
-            All labels
-          </button>
-          {labelOptions.map(({ key, label }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveLabelFilter(key)}
-              className={cn(
-                'rounded-full border px-2.5 py-1 font-semibold transition-colors',
-                label.color,
-                activeLabelFilter === key ? 'ring-2 ring-[var(--theme-accent)]' : '',
-              )}
-              title={label.tier2 ? `${label.tier1} → ${label.tier2}` : label.tier1}
-            >
-              {label.tier1}
-              {label.tier2 ? <span className="ml-1 opacity-70">/{label.tier2}</span> : null}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {backendToast ? (
-        <div className="fixed right-4 top-4 z-50 max-w-sm rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-card)] px-4 py-3 text-sm text-[var(--theme-text)] shadow-[0_18px_60px_var(--theme-shadow)]" role="status" aria-live="polite">
-          <div className="flex items-start gap-3">
-            <span className={cn(
-              'mt-1 h-2 w-2 shrink-0 rounded-full',
-              backendToast.badgeTone === 'claude' ? 'bg-violet-500' : backendToast.badgeTone === 'local' ? 'bg-amber-500' : 'bg-[var(--theme-muted)]',
-            )} />
-            <div>
-              <div className="font-semibold">{backendToast.toastTitle}</div>
-              <div className="mt-1 text-xs leading-relaxed text-[var(--theme-muted-2)]">{backendToast.toastBody}</div>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <select
+                value={selectedBoard}
+                onChange={(e) => setSelectedBoard(e.target.value)}
+                className="appearance-none rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] pl-10 pr-10 py-1.5 text-sm font-semibold text-[var(--theme-text)] outline-none hover:bg-[var(--theme-card2)] transition-colors"
+              >
+                {boards.map(b => (
+                  <option key={b.slug} value={b.slug}>{b.icon ? `${b.icon} ` : ''}{b.displayName || b.slug}</option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-muted)]">
+                <HugeiconsIcon icon={Office01Icon} size={16} />
+              </div>
             </div>
-            <button type="button" onClick={() => setBackendToast(null)} className="ml-1 rounded-full px-1.5 text-[var(--theme-muted)] hover:bg-[var(--theme-card2)] hover:text-[var(--theme-text)]" aria-label="Dismiss backend notice">×</button>
+
+            <button
+              onClick={() => setBoardModalOpen(true)}
+              className="flex size-8 items-center justify-center rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] text-[var(--theme-muted)] hover:bg-[var(--theme-card2)] hover:text-[var(--theme-text)] transition-colors"
+              title="New board"
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={16} />
+            </button>
+            {selectedBoard !== 'default' && (
+              <button
+                onClick={() => {
+                  if (confirm(`Archive board "${selectedBoard}"?`)) {
+                    void archiveBoardMutation.mutateAsync(selectedBoard)
+                  }
+                }}
+                className="flex size-8 items-center justify-center rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] text-[var(--theme-muted)] hover:bg-[var(--theme-card2)] hover:text-red-500 transition-colors"
+                title="Archive board"
+              >
+                <HugeiconsIcon icon={Archive02Icon} size={16} />
+              </button>
+            )}
+          </div>
+
+          <div className={cn('rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider shadow-sm transition-colors', presentation.badgeTone === 'hermes-proxy' ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-700' : presentation.badgeTone === 'claude' ? 'border-blue-400/40 bg-blue-500/10 text-blue-700' : 'border-slate-400/40 bg-slate-500/10 text-slate-700')} title={presentation.title}>
+            {presentation.dashboardUrl ? (
+              <a href={presentation.dashboardUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">{presentation.badgeLabel}</a>
+            ) : presentation.badgeLabel}
+          </div>
+
+          {activeBoard?.description && (
+            <span className="hidden text-xs text-[var(--theme-muted)] lg:inline-block">— {activeBoard.description}</span>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setComposerOpen(!composerOpen)} className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-2 text-sm font-semibold text-[var(--theme-text)] shadow-sm hover:bg-[var(--theme-card2)] transition-colors">
+            {composerOpen ? 'Cancel' : 'Add card'}
+          </button>
+        </div>
+      </header>
+
+      {boardModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-card)] p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-2">
+              <HugeiconsIcon icon={Office01Icon} size={20} className="text-[var(--theme-accent)]" />
+              <h3 className="text-lg font-bold text-[var(--theme-text)]">Create New Project Board</h3>
+            </div>
+            <div className="space-y-4">
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-[var(--theme-muted)] uppercase tracking-wider">Board Slug (immutable)</span>
+                <input
+                  value={newBoardSlug}
+                  onChange={e => setNewBoardSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-'))}
+                  placeholder="my-company-project"
+                  className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-[var(--theme-muted)] uppercase tracking-wider">Display Name</span>
+                <input
+                  value={newBoardName}
+                  onChange={e => setNewBoardName(e.target.value)}
+                  placeholder="ACME Corp - Web App"
+                  className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-[var(--theme-muted)] uppercase tracking-wider">Description (optional)</span>
+                <textarea
+                  value={newBoardDesc}
+                  onChange={e => setNewBoardDesc(e.target.value)}
+                  rows={2}
+                  placeholder="Company/Firm context for this project view..."
+                  className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-semibold text-[var(--theme-muted)] uppercase tracking-wider">Icon / Avatar</span>
+                <input
+                  value={newBoardIcon}
+                  onChange={e => setNewBoardIcon(e.target.value)}
+                  placeholder="🏢"
+                  className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none"
+                />
+              </label>
+              <div className="mt-2 rounded-lg bg-[var(--theme-bg)] p-3 text-[10px] text-[var(--theme-muted)]">
+                <p>Initializing a new board will automatically run <strong>firm init</strong> in the project folder to track company/firm metadata.</p>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => setBoardModalOpen(false)}
+                  className="rounded-xl border border-[var(--theme-border)] px-4 py-2 text-sm font-semibold text-[var(--theme-muted)] hover:bg-[var(--theme-card2)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={!newBoardSlug || createBoardMutation.isPending}
+                  onClick={() => void createBoardMutation.mutateAsync({ slug: newBoardSlug, name: newBoardName, description: newBoardDesc, icon: newBoardIcon })}
+                  className="rounded-xl bg-[var(--theme-accent)] px-4 py-2 text-sm font-semibold text-primary-950 disabled:opacity-50"
+                >
+                  {createBoardMutation.isPending ? 'Initializing...' : 'Create Project'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      ) : null}
+      )}
 
       {composerOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6 backdrop-blur-sm">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-[var(--theme-border2)] bg-[var(--theme-card)] p-5 shadow-[0_30px_100px_var(--theme-shadow)]">
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--theme-muted)]">Manual planning</div>
-                <h3 className="mt-1 text-lg font-semibold text-[var(--theme-text)]">New board card</h3>
-                <p className="mt-1 text-xs text-[var(--theme-muted-2)]">Spec work before routing it to an agent. Dispatch stays explicit through Router.</p>
-              </div>
-              <button type="button" onClick={() => setComposerOpen(false)} className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-card2)] px-3 py-1.5 text-sm text-[var(--theme-muted)] hover:text-[var(--theme-text)]">Close</button>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="block text-xs md:col-span-2">
-                <span className="mb-1 block font-semibold text-[var(--theme-muted)]">Title</span>
-                <input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} placeholder="e.g. Review board UX safety" className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none" />
-              </label>
-              <label className="block text-xs md:col-span-2">
-                <span className="mb-1 block font-semibold text-[var(--theme-muted)]">Spec</span>
-                <textarea value={draftSpec} onChange={(event) => setDraftSpec(event.target.value)} rows={4} placeholder="Short task spec / context" className="w-full resize-none rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none" />
-              </label>
-              <label className="block text-xs md:col-span-2">
-                <span className="mb-1 block font-semibold text-[var(--theme-muted)]">Acceptance criteria</span>
-                <textarea value={draftCriteria} onChange={(event) => setDraftCriteria(event.target.value)} rows={3} placeholder="One per line" className="w-full resize-none rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none" />
+        <div className="rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-card)] p-4 shadow-sm">
+          <div className="space-y-4">
+            <input autoFocus value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} placeholder="Card title…" className="w-full bg-transparent text-lg font-semibold text-[var(--theme-text)] outline-none" onKeyDown={(event) => { if (event.key === 'Enter' && draftTitle.trim() && !createMutation.isPending) void handleCreateCard() }} />
+            <textarea value={draftSpec} onChange={(event) => setDraftSpec(event.target.value)} placeholder="Requirement or spec summary…" className="min-h-24 w-full resize-none bg-transparent text-sm text-[var(--theme-text)] outline-none" />
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <label className="block text-xs">
+                <span className="mb-1 block font-semibold text-[var(--theme-muted)]">Acceptance criteria (one per line)</span>
+                <textarea value={draftCriteria} onChange={(event) => setDraftCriteria(event.target.value)} placeholder="- Criterion 1\n- Criterion 2" className="min-h-20 w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none" />
               </label>
               <label className="block text-xs">
-                <span className="mb-1 block font-semibold text-[var(--theme-muted)]">Assigned worker</span>
-                <select value={draftWorker} onChange={(event) => setDraftWorker(event.target.value)} className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none">
-                  <option value="">Unassigned</option>
-                  {workers.map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName || worker.id}</option>)}
-                </select>
-              </label>
-              <label className="block text-xs">
-                <span className="mb-1 block font-semibold text-[var(--theme-muted)]">Reviewer</span>
-                <select value={draftReviewer} onChange={(event) => setDraftReviewer(event.target.value)} className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none">
+                <span className="mb-1 block font-semibold text-[var(--theme-muted)]">Assignee</span>
+                <select value={draftWorkerId} onChange={(event) => setDraftWorkerId(event.target.value)} className="w-full rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 py-2 text-sm text-[var(--theme-text)] outline-none">
                   <option value="">Unassigned</option>
                   {workers.map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName || worker.id}</option>)}
                 </select>
@@ -548,7 +557,7 @@ export function Swarm2KanbanBoard({
               {createMutation.error ? <div className="rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-700 md:col-span-2">{createMutation.error.message}</div> : null}
               <div className="flex justify-end gap-2 md:col-span-2">
                 <button type="button" onClick={() => setComposerOpen(false)} className="rounded-xl border border-[var(--theme-border)] px-3 py-2 text-xs font-semibold text-[var(--theme-muted)] hover:bg-[var(--theme-card2)]">Cancel</button>
-                <button type="button" disabled={!draftTitle.trim() || createMutation.isPending} onClick={() => void createMutation.mutateAsync()} className="rounded-xl bg-[var(--theme-accent)] px-3 py-2 text-xs font-semibold text-primary-950 disabled:opacity-50">{createMutation.isPending ? 'Saving…' : 'Create card'}</button>
+                <button type="button" disabled={!draftTitle.trim() || createMutation.isPending} onClick={() => void handleCreateCard()} className="rounded-xl bg-[var(--theme-accent)] px-3 py-2 text-xs font-semibold text-primary-950 disabled:opacity-50">{createMutation.isPending ? 'Saving…' : 'Create card'}</button>
               </div>
             </div>
           </div>
@@ -589,7 +598,7 @@ export function Swarm2KanbanBoard({
                     {card.acceptanceCriteria.length ? (
                       <ul className="mt-2 space-y-1 text-[11px] text-[var(--theme-muted)]">
                         {card.acceptanceCriteria.slice(0, 3).map((item, index) => <li key={`${card.id}-ac-${index}`}>✓ {item}</li>)}
-                        {card.acceptanceCriteria.length > 3 ? <li>+{card.acceptanceCriteria.length - 3} more</li> : null}
+                        {card.acceptanceCriteria.length > 3 ? <li>+${card.acceptanceCriteria.length - 3} more</li> : null}
                       </ul>
                     ) : null}
                     {card.tags?.length ? (
@@ -598,7 +607,7 @@ export function Swarm2KanbanBoard({
                           const parsed = parseTaskLabel(tag)
                           return parsed ? (
                             <span key={tag} className={cn('rounded-full border px-1.5 py-0.5 text-[9px] font-semibold', parsed.color)}>
-                              {parsed.tier1}{parsed.tier2 ? <span className="opacity-70">/{parsed.tier2}</span> : null}
+                              {parsed.tier1}{parsed.tier2 ? <span className="opacity-70">/${parsed.tier2}</span> : null}
                             </span>
                           ) : (
                             <span key={tag} className="rounded-full border border-[var(--theme-border)] px-1.5 py-0.5 text-[9px] text-[var(--theme-muted)]">{tag}</span>

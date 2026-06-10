@@ -192,6 +192,8 @@ export async function updateDashboardKanbanTask(
 export type DashboardKanbanBoard = {
   slug: string
   display_name?: string | null
+  description?: string | null
+  icon?: string | null
   archived?: boolean
 }
 
@@ -200,4 +202,22 @@ export function listDashboardKanbanBoards(): Promise<{
   current: string
 }> {
   return dashboardFetch('/api/plugins/kanban/boards')
+}
+
+export function createDashboardKanbanBoard(input: {
+  slug: string
+  name?: string
+  description?: string
+  icon?: string
+}): Promise<DashboardKanbanBoard> {
+  return dashboardFetch('/api/plugins/kanban/boards', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function archiveDashboardKanbanBoard(slug: string): Promise<{ ok: true }> {
+  return dashboardFetch(`/api/plugins/kanban/boards/${encodeURIComponent(slug)}`, {
+    method: 'DELETE',
+  })
 }
