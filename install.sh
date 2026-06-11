@@ -16,7 +16,7 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/Greene-ctrl/hermes-workspace.git}"
-REPO_BRANCH="${REPO_BRANCH:-jules-3029121990535762579-f3978233}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/hermes-workspace}"
 GATEWAY_PORT="${GATEWAY_PORT:-8642}"
 NOUS_INSTALLER_URL="${NOUS_INSTALLER_URL:-https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh}"

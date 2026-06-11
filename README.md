@@ -92,7 +92,7 @@ Three paths — pick the one that matches you:
 ### One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Greene-ctrl/hermes-workspace/jules-3029121990535762579-f3978233/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Greene-ctrl/hermes-workspace/main/install.sh | bash
 ```
 
 This installs `hermes-agent` via Nous's official installer, clones this repo, sets up `.env`, and installs dependencies. Then:
