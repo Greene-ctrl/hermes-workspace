@@ -2,7 +2,7 @@
 # Hermes Workspace — one-liner installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/outsourc-e/hermes-workspace/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Greene-ctrl/hermes-workspace/main/install.sh | bash
 #
 # What it does:
 #   1. Verifies Node 22+, git, pnpm
@@ -15,7 +15,8 @@
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/outsourc-e/hermes-workspace.git}"
+REPO_URL="${REPO_URL:-https://github.com/Greene-ctrl/hermes-workspace.git}"
+REPO_BRANCH="${REPO_BRANCH:-jules-3029121990535762579-f3978233}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/hermes-workspace}"
 GATEWAY_PORT="${GATEWAY_PORT:-8642}"
 NOUS_INSTALLER_URL="${NOUS_INSTALLER_URL:-https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh}"
@@ -35,7 +36,7 @@ banner() {
 
    ╭────────────────────────────────────────────╮
    │  HERMES WORKSPACE — zero-fork installer   │
-   │  outsourc-e/hermes-workspace               │
+   │  Greene-ctrl/hermes-workspace               │
    ╰────────────────────────────────────────────╯
 
 EOF
@@ -171,7 +172,7 @@ elif [[ -e "$INSTALL_DIR" ]]; then
   red "Move/remove it or set INSTALL_DIR=..."
   exit 1
 else
-  git clone "$REPO_URL" "$INSTALL_DIR"
+  git clone -b "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR"
 fi
 cd "$INSTALL_DIR"
 green "  Workspace ready at $INSTALL_DIR ✓"
